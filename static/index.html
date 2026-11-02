@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <title>Code Reviewer</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --surface: #181b22;
+      --surface-hover: #20242d;
+      --border: #262a33;
+      --text: #e6e8ec;
+      --muted: #8a909c;
+      --accent: #7aa2f7;
+      --add: #9ece6a;
+      --add-bg: rgba(158, 206, 106, 0.08);
+      --del: #f7768e;
+      --del-bg: rgba(247, 118, 142, 0.08);
+      --hunk: #7dcfff;
+      --radius: 14px;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    main {
+      min-height: 100%;
+      padding: calc(76px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom));
+    }
+
+    /* Floating controls shared by all views */
+    .fab {
+      position: fixed;
+      z-index: 10;
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      background: rgba(24, 27, 34, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .fab:active { transform: scale(0.94); background: var(--surface-hover); }
+    .fab svg { width: 22px; height: 22px; }
+    #home-btn { top: calc(16px + env(safe-area-inset-top)); left: 16px; }
+    #fs-btn { top: calc(16px + env(safe-area-inset-top)); right: 16px; }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    /* Home view */
+    .repo-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+    .repo-list a {
+      display: block;
+      padding: 18px 20px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 500;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .repo-list a:active { background: var(--surface-hover); border-color: var(--accent); }
+
+    /* Diff view */
+    .diff {
+      margin: 0;
+      padding: 12px 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      font: 12px/1.55 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+      overflow-x: auto;
+    }
+    .diff span { display: block; padding: 0 14px; white-space: pre; min-width: max-content; }
+    .diff .add { color: var(--add); background: var(--add-bg); }
+    .diff .del { color: var(--del); background: var(--del-bg); }
+    .diff .hunk { color: var(--hunk); }
+    .diff .meta { color: var(--muted); }
+
+    .message { text-align: center; color: var(--muted); padding: 40px 16px; }
+
+    /* Fallback orientation lock: if the phone is turned while the real lock is unavailable,
+       rotate the page back so it stays in portrait. Only kicks in on touch devices. */
+    @media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+      html.no-orientation-lock body {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vh;
+        height: 100vw;
+        transform-origin: top left;
+        transform: rotate(-90deg) translateX(-100%);
+        overflow: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a id="home-btn" class="fab" href="#/" aria-label="Home">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/>
+    </svg>
+  </a>
+
+  <button id="fs-btn" class="fab" aria-label="Toggle fullscreen"></button>
+
+  <main id="view"></main>
+
+  <script>
+    const ICON_MAXIMIZE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+    const ICON_MINIMIZE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+
+    const view = document.getElementById("view");
+    const fsBtn = document.getElementById("fs-btn");
+
+    // ---- Fullscreen + orientation lock ----
+
+    function updateFullscreenButton() {
+      fsBtn.innerHTML = document.fullscreenElement ? ICON_MINIMIZE : ICON_MAXIMIZE;
+    }
+
+    async function lockPortrait() {
+      try {
+        await screen.orientation.lock("portrait");
+        document.documentElement.classList.remove("no-orientation-lock");
+      } catch {
+        // Not supported (e.g. iOS, desktop) or not in fullscreen: use the CSS fallback
+        document.documentElement.classList.add("no-orientation-lock");
+      }
+    }
+
+    fsBtn.addEventListener("click", async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+          await lockPortrait();
+        }
+      } catch (e) {
+        console.warn("Fullscreen not available:", e);
+      }
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+      updateFullscreenButton();
+      // The real lock is released when leaving fullscreen
+      if (!document.fullscreenElement) document.documentElement.classList.add("no-orientation-lock");
+    });
+
+    document.documentElement.classList.add("no-orientation-lock");
+    updateFullscreenButton();
+
+    // ---- Views ----
+    // Hash routing keeps this a single page, so fullscreen survives navigation.
+
+    function el(tag, props = {}, text) {
+      const node = Object.assign(document.createElement(tag), props);
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function showMessage(text) {
+      view.replaceChildren(el("p", { className: "message" }, text));
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    async function renderHome() {
+      showMessage("Loading…");
+      const { repos } = await fetchJson("/api/repos");
+      if (repos.length === 0) return showMessage("No repositories found.");
+      const list = el("nav", { className: "repo-list" });
+      for (const name of repos) {
+        list.append(el("a", { href: "#/repo/" + encodeURIComponent(name) }, name));
+      }
+      view.replaceChildren(el("h1", {}, "Repositories"), list);
+    }
+
+    function classForLine(line) {
+      if (line.startsWith("+++") || line.startsWith("---")) return "meta";
+      if (line.startsWith("+")) return "add";
+      if (line.startsWith("-")) return "del";
+      if (line.startsWith("@@")) return "hunk";
+      if (/^(diff |index |new file|deleted file|similarity|rename |old mode|new mode)/.test(line)) return "meta";
+      return "";
+    }
+
+    async function renderDiff(repo) {
+      showMessage("Loading…");
+      const { diff } = await fetchJson("/api/diff?repo=" + encodeURIComponent(repo));
+      const title = el("h1", {}, repo);
+      if (!diff.trim()) return view.replaceChildren(title, el("p", { className: "message" }, "No changes."));
+      const pre = el("pre", { className: "diff" });
+      for (const line of diff.replace(/\n$/, "").split("\n")) {
+        pre.append(el("span", { className: classForLine(line) }, line || " "));
+      }
+      view.replaceChildren(title, pre);
+    }
+
+    async function route() {
+      window.scrollTo(0, 0);
+      const match = location.hash.match(/^#\/repo\/(.+)$/);
+      try {
+        if (match) await renderDiff(decodeURIComponent(match[1]));
+        else await renderHome();
+      } catch (e) {
+        showMessage("Error: " + e.message);
+      }
+    }
+
+    window.addEventListener("hashchange", route);
+    route();
+  </script>
+</body>
+</html>
